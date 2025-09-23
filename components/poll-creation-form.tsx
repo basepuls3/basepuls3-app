@@ -14,10 +14,13 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Badge } from "@/components/ui/badge"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { CalendarIcon, Plus, X, Info, Coins, Users, Clock } from "lucide-react"
+import { CalendarIcon, Plus, X, Info, Coins, Users, Clock, AlertCircle } from "lucide-react"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+import { useCreatePoll, usePollsContractAddress } from "@/lib/contracts/polls-contract-utils"
+import { useAccount } from "wagmi"
+import { MIN_POLL_DURATION, MAX_POLL_DURATION } from "@/lib/contracts/polls-contract"
 
 const pollSchema = z.object({
   title: z.string().min(10, "Title must be at least 10 characters").max(200, "Title too long"),
@@ -31,6 +34,15 @@ const pollSchema = z.object({
   fundingType: z.enum(["none", "self", "community"]),
   rewardAmount: z.number().min(0).optional(),
   requireWalletConnection: z.boolean().default(true),
+}).refine((data) => {
+  const now = new Date()
+  const diffInHours = (data.endDate.getTime() - now.getTime()) / (1000 * 60 * 60)
+  const minHours = Number(MIN_POLL_DURATION) / 3600
+  const maxHours = Number(MAX_POLL_DURATION) / 3600
+  return diffInHours >= minHours && diffInHours <= maxHours
+}, {
+  message: `Poll duration must be between ${Number(MIN_POLL_DURATION) / 3600} hours and ${Number(MAX_POLL_DURATION) / 3600 / 24} days`,
+  path: ["endDate"]
 })
 
 type PollFormData = z.infer<typeof pollSchema>
@@ -39,13 +51,17 @@ const categories = ["Governance", "Community", "Product", "Events", "General", "
 
 export function PollCreationForm() {
   const [options, setOptions] = useState<string[]>(["", ""])
-  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const { isConnected } = useAccount()
+  const contractAddress = usePollsContractAddress()
+  const { createPoll, isPending, isConfirming, isSuccess, error } = useCreatePoll()
 
   const {
     register,
     handleSubmit,
     watch,
     setValue,
+    reset,
     formState: { errors },
   } = useForm<PollFormData>({
     resolver: zodResolver(pollSchema),
@@ -58,6 +74,8 @@ export function PollCreationForm() {
 
   const fundingType = watch("fundingType")
   const endDate = watch("endDate")
+
+  const isSubmitting = isPending || isConfirming
 
   const addOption = () => {
     if (options.length < 10) {
@@ -83,31 +101,43 @@ export function PollCreationForm() {
   }
 
   const onSubmit = async (data: PollFormData) => {
-    setIsSubmitting(true)
+    if (!isConnected) {
+      toast.error("Please connect your wallet to create a poll")
+      return
+    }
+
+    if (!contractAddress) {
+      toast.error("Contract not available on this network")
+      return
+    }
+
     try {
-      // TODO: Implement actual poll creation logic with smart contract interaction
       console.log("Creating poll:", data)
 
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000))
+      // Calculate duration in hours
+      const now = new Date()
+      const durationInHours = Math.ceil((data.endDate.getTime() - now.getTime()) / (1000 * 60 * 60))
 
-      toast.success("Poll created successfully!")
+      // Create poll on contract
+      await createPoll(data.title, data.options, durationInHours)
 
-      // Reset form
-      setOptions(["", ""])
-      setValue("title", "")
-      setValue("description", "")
-      setValue("category", "")
-      setValue("options", ["", ""])
-      setValue("endDate", undefined)
-      setValue("fundingType", "none")
-      setValue("rewardAmount", undefined)
     } catch (error) {
       console.error("Error creating poll:", error)
       toast.error("Failed to create poll. Please try again.")
-    } finally {
-      setIsSubmitting(false)
     }
+  }
+
+  // Handle success
+  if (isSuccess) {
+    toast.success("Poll created successfully!")
+    // Reset form
+    setOptions(["", ""])
+    reset()
+  }
+
+  // Handle error
+  if (error) {
+    toast.error(`Failed to create poll: ${error.message}`)
   }
 
   return (
@@ -324,13 +354,40 @@ export function PollCreationForm() {
           </CardContent>
         </Card>
 
+        {/* Contract Status */}
+        {!isConnected && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-amber-600" />
+              <span className="font-medium text-amber-800">Wallet not connected</span>
+            </div>
+            <p className="text-amber-700 mt-1">Please connect your wallet to create a poll on-chain</p>
+          </div>
+        )}
+
+        {isConnected && !contractAddress && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-red-600" />
+              <span className="font-medium text-red-800">Contract not available</span>
+            </div>
+            <p className="text-red-700 mt-1">The polls contract is not deployed on this network</p>
+          </div>
+        )}
+
         {/* Submit */}
         <div className="flex justify-end gap-4">
           <Button type="button" variant="outline" size="lg">
             Save as Draft
           </Button>
-          <Button type="submit" size="lg" disabled={isSubmitting}>
-            {isSubmitting ? "Creating Poll..." : "Create Poll"}
+          <Button
+            type="submit"
+            size="lg"
+            disabled={isSubmitting || !isConnected || !contractAddress}
+          >
+            {isPending && "Preparing transaction..."}
+            {isConfirming && "Confirming transaction..."}
+            {!isSubmitting && "Create Poll"}
           </Button>
         </div>
       </form>

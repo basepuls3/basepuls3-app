@@ -4,10 +4,12 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { PollCard } from "@/components/poll-card"
 import { PollFilters } from "@/components/poll-filters"
-import { Plus, TrendingUp, Clock, Users } from "lucide-react"
+import { Plus, TrendingUp, Clock, Users, AlertCircle } from "lucide-react"
 import Link from "next/link"
+import { useActivePolls, useNextPollId } from "@/lib/contracts/polls-contract-utils"
+import { useAccount } from "wagmi"
 
-// Mock data for demonstration
+// Mock data for demonstration (keeping as fallback)
 const mockPolls = [
   {
     id: "1",
@@ -27,62 +29,6 @@ const mockPolls = [
       { id: "1b", text: "No, keep current system", votes: 400, percentage: 32 },
     ],
   },
-  {
-    id: "2",
-    title: "Which feature should we prioritize next?",
-    description:
-      "Help us decide what to build next for the platform. Your vote will directly influence our development roadmap.",
-    creator: "0xabcdef1234567890abcdef1234567890abcdef12",
-    createdAt: "2024-01-14T15:30:00Z",
-    endsAt: "2024-01-28T15:30:00Z",
-    totalVotes: 892,
-    totalReward: 1.8,
-    status: "active" as const,
-    category: "Product",
-    fundingType: "self" as const,
-    options: [
-      { id: "2a", text: "Mobile app", votes: 356, percentage: 40 },
-      { id: "2b", text: "Advanced analytics", votes: 267, percentage: 30 },
-      { id: "2c", text: "API integration", votes: 178, percentage: 20 },
-      { id: "2d", text: "Multi-language support", votes: 91, percentage: 10 },
-    ],
-  },
-  {
-    id: "3",
-    title: "Community meetup location preference",
-    description: "Where should we host our next community meetup? This is a simple poll with no rewards.",
-    creator: "0x9876543210fedcba9876543210fedcba98765432",
-    createdAt: "2024-01-13T09:00:00Z",
-    endsAt: "2024-01-20T09:00:00Z",
-    totalVotes: 234,
-    totalReward: 0,
-    status: "active" as const,
-    category: "Events",
-    fundingType: "none" as const,
-    options: [
-      { id: "3a", text: "San Francisco", votes: 94, percentage: 40 },
-      { id: "3b", text: "New York", votes: 70, percentage: 30 },
-      { id: "3c", text: "London", votes: 47, percentage: 20 },
-      { id: "3d", text: "Virtual event", votes: 23, percentage: 10 },
-    ],
-  },
-  {
-    id: "4",
-    title: "Protocol upgrade proposal #42",
-    description: "Technical proposal to upgrade the smart contract with new security features and gas optimizations.",
-    creator: "0xfedcba9876543210fedcba9876543210fedcba98",
-    createdAt: "2024-01-10T12:00:00Z",
-    endsAt: "2024-01-18T12:00:00Z",
-    totalVotes: 1856,
-    totalReward: 5.2,
-    status: "ended" as const,
-    category: "Governance",
-    fundingType: "community" as const,
-    options: [
-      { id: "4a", text: "Approve upgrade", votes: 1299, percentage: 70 },
-      { id: "4b", text: "Reject upgrade", votes: 557, percentage: 30 },
-    ],
-  },
 ]
 
 export default function DappPage() {
@@ -94,11 +40,20 @@ export default function DappPage() {
     sortBy: "Latest",
   })
 
-  const filteredPolls = mockPolls.filter((poll) => {
+  const { isConnected } = useAccount()
+  const { data: activePollIds, isLoading: pollsLoading, error: pollsError } = useActivePolls()
+  const { data: nextPollId, isLoading: nextIdLoading } = useNextPollId()
+
+  // Use contract data if available and wallet is connected, otherwise use mock data
+  const useContractData = isConnected && !pollsError
+  const polls = useContractData ? [] : mockPolls // TODO: Implement contract data parsing
+  const isLoading = useContractData ? pollsLoading : false
+
+  const filteredPolls = polls.filter((poll) => {
     if (
       filters.search &&
       !poll.title.toLowerCase().includes(filters.search.toLowerCase()) &&
-      !poll.description.toLowerCase().includes(filters.search.toLowerCase())
+      !poll.description?.toLowerCase().includes(filters.search.toLowerCase())
     ) {
       return false
     }
@@ -121,11 +76,14 @@ export default function DappPage() {
     return true
   })
 
+  const totalPolls = useContractData ? Number(nextPollId || 0n) : mockPolls.length
+  const activePolls = useContractData ? (activePollIds?.length || 0) : mockPolls.filter((p) => p.status === "active").length
+
   const stats = {
-    totalPolls: mockPolls.length,
-    activePolls: mockPolls.filter((p) => p.status === "active").length,
-    totalVotes: mockPolls.reduce((sum, poll) => sum + poll.totalVotes, 0),
-    totalRewards: mockPolls.reduce((sum, poll) => sum + poll.totalReward, 0),
+    totalPolls,
+    activePolls,
+    totalVotes: polls.reduce((sum, poll) => sum + poll.totalVotes, 0),
+    totalRewards: polls.reduce((sum, poll) => sum + poll.totalReward, 0),
   }
 
   return (
@@ -134,7 +92,16 @@ export default function DappPage() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold">Explore Polls</h1>
-          <p className="text-muted-foreground">Discover and participate in community-driven decisions</p>
+          <p className="text-muted-foreground">
+            Discover and participate in community-driven decisions
+            {!isConnected && " • Connect wallet to interact with live polls"}
+          </p>
+          {pollsError && (
+            <div className="flex items-center gap-2 text-amber-600 mt-2">
+              <AlertCircle className="h-4 w-4" />
+              <span className="text-sm">Contract not deployed on this network - showing demo data</span>
+            </div>
+          )}
         </div>
         <Button asChild size="lg">
           <Link href="/dapp/create">
@@ -179,28 +146,50 @@ export default function DappPage() {
       <PollFilters filters={filters} onFiltersChange={setFilters} />
 
       {/* Polls Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredPolls.map((poll) => (
-          <PollCard
-            key={poll.id}
-            poll={poll}
-            onVote={(pollId, optionId) => {
-              console.log("Vote:", pollId, optionId)
-              // TODO: Implement voting logic
-            }}
-            onViewDetails={(pollId) => {
-              console.log("View details:", pollId)
-              // TODO: Navigate to poll details
-            }}
-          />
-        ))}
-      </div>
+      {isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="bg-card p-6 rounded-lg border animate-pulse">
+              <div className="h-4 bg-muted rounded w-3/4 mb-3"></div>
+              <div className="h-3 bg-muted rounded w-1/2 mb-4"></div>
+              <div className="space-y-2">
+                <div className="h-3 bg-muted rounded w-full"></div>
+                <div className="h-3 bg-muted rounded w-2/3"></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredPolls.map((poll) => (
+            <PollCard
+              key={poll.id}
+              poll={poll}
+              onVote={(pollId, optionId) => {
+                console.log("Vote:", pollId, optionId)
+                // TODO: Implement voting logic with contract
+              }}
+              onViewDetails={(pollId) => {
+                console.log("View details:", pollId)
+                // TODO: Navigate to poll details
+              }}
+            />
+          ))}
+        </div>
+      )}
 
-      {filteredPolls.length === 0 && (
+      {!isLoading && filteredPolls.length === 0 && (
         <div className="text-center py-12">
-          <p className="text-muted-foreground text-lg">No polls found matching your criteria.</p>
+          <p className="text-muted-foreground text-lg">
+            {useContractData && activePollIds?.length === 0
+              ? "No active polls found on the contract."
+              : "No polls found matching your criteria."
+            }
+          </p>
           <Button asChild className="mt-4">
-            <Link href="/dapp/create">Create the first poll</Link>
+            <Link href="/dapp/create">
+              {useContractData && activePollIds?.length === 0 ? "Create the first poll" : "Create a poll"}
+            </Link>
           </Button>
         </div>
       )}
